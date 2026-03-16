@@ -1,0 +1,26 @@
+{
+  "name": "@obinexusltd/obix-binding-go",
+  "version": "0.1.0",
+  "description": "OBIX Go Binding - Backend microservices, concurrent state management",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "license": "MIT",
+  "author": "OBINexus <okpalan@protonmail.com>",
+  "publishConfig": {
+    "access": "public"
+  }
+}
