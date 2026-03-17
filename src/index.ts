@@ -4,225 +4,152 @@
  * Connects libpolycall FFI/polyglot bridge to Go runtime
  */
 
-export type SchemaMode = 'monoglot' | 'polyglot' | 'hybrid';
+// ── Type re-exports ────────────────────────────────────────────────────────────
+export type {
+  SchemaMode,
+  InvocationEnvelope,
+  BindingInvokeError,
+  BindingAbiInvoker,
+  GoFFIDescriptor,
+  GoBindingConfig,
+  GoBindingBridge,
+  GoMemoryStats,
+  PoolStats,
+  PoolTask,
+  GoroutinePoolConfig,
+  GoroutinePoolAPI,
+  ChannelConfig,
+  GoChannel,
+  ChannelManagerAPI,
+  MemoryTrackerConfig,
+  MemoryTrackerAPI,
+  ResolvedSchema,
+  SchemaResolverConfig,
+  SchemaResolverAPI,
+  FFITransportConfig,
+  FFITransportAPI,
+} from './types.js';
 
-export interface InvocationEnvelope {
-  functionId: string;
-  args: unknown[];
-  metadata: {
-    schemaMode: SchemaMode;
-    binding: string;
-    timestampMs: number;
-    ffiPath: string;
-  };
-}
+// ── Sub-module factory re-exports ─────────────────────────────────────────────
+export { createFFITransport, normalizeFunctionIdentifier } from './ffi-transport.js';
+export { createGoroutinePool } from './goroutine-pool.js';
+export { createChannelManager } from './channel-manager.js';
+export { createMemoryTracker } from './memory-tracker.js';
+export { createSchemaResolver } from './schema-resolver.js';
 
-export interface BindingInvokeError {
-  code: 'NOT_INITIALIZED' | 'MISSING_SYMBOL' | 'INVOCATION_FAILED';
-  message: string;
-  envelope: InvocationEnvelope;
-  cause?: unknown;
-}
+// ── Imports for the main factory ──────────────────────────────────────────────
+import type { GoBindingBridge, GoBindingConfig, GoMemoryStats, PoolStats } from './types.js';
+import { createFFITransport, normalizeFunctionIdentifier } from './ffi-transport.js';
+import { createGoroutinePool } from './goroutine-pool.js';
+import { createChannelManager } from './channel-manager.js';
+import { createMemoryTracker } from './memory-tracker.js';
+import { createSchemaResolver } from './schema-resolver.js';
 
-export interface BindingAbiInvoker {
-  invoke(envelopeJson: string): unknown | Promise<unknown>;
-}
-
-function normalizeFunctionIdentifier(fn: string | object): string | undefined {
-  if (typeof fn === 'string' && fn.trim()) return fn;
-  if (fn && typeof fn === 'object') {
-    const descriptor = fn as { functionId?: string; id?: string; name?: string };
-    return descriptor.functionId ?? descriptor.id ?? descriptor.name;
-  }
-  return undefined;
-}
-
-/**
- * FFI descriptor for Go runtime
- * Defines how Go interops with libpolycall
- */
-export interface GoFFIDescriptor {
-  ffiPath: string;
-  goVersion: string;
-  cgoEnabled: boolean;
-  concurrencyModel: 'goroutines' | 'channels' | 'sync';
-  goroutinePoolSize: number;
-}
-
-/**
- * Configuration for Go binding
- * Specifies how libpolycall connects to Go runtime
- */
-export interface GoBindingConfig {
-  ffiPath: string;
-  goPath: string;
-  schemaMode: SchemaMode;
-  memoryModel: 'gc' | 'manual' | 'hybrid';
-  cgoEnabled?: boolean;
-  goroutinePoolSize?: number;
-  concurrencyModel?: 'goroutines' | 'channels' | 'sync';
-  channelBufferSize?: number;
-  gcFraction?: number;
-  ffiDescriptor?: GoFFIDescriptor;
-}
-
-/**
- * Bridge interface for Go runtime
- * Methods to invoke polyglot functions and manage runtime state
- */
-export interface GoBindingBridge {
-  /**
-   * Initialize the binding and connect to libpolycall
-   */
-  initialize(): Promise<void>;
-
-  /**
-   * Invoke a polyglot function through libpolycall
-   * @param fn Function name or descriptor
-   * @param args Arguments to pass to function
-   * @returns Result from polyglot function
-   */
-  invoke(fn: string | object, args: unknown[]): Promise<unknown>;
-
-  /**
-   * Clean up resources and disconnect from libpolycall
-   */
-  destroy(): Promise<void>;
-
-  /**
-   * Get current memory usage of the binding
-   * @returns Memory usage statistics
-   */
-  getMemoryUsage(): {
-    allocBytes: number;
-    totalAllocBytes: number;
-    sysBytes: number;
-    numGC: number;
-    goroutineCount: number;
-  };
-
-  /**
-   * Get schema mode of current binding
-   */
-  getSchemaMode(): SchemaMode;
-
-  /**
-   * Check if binding is initialized and ready
-   */
-  isInitialized(): boolean;
-
-  /**
-   * Execute a goroutine pool task
-   */
-  submitTask(taskId: string, fn: string | object, args: unknown[]): Promise<unknown>;
-
-  /**
-   * Get goroutine pool statistics
-   */
-  getPoolStats(): {
-    activeGoroutines: number;
-    queuedTasks: number;
-    completedTasks: number;
-  };
-}
+// ── Main factory ──────────────────────────────────────────────────────────────
 
 /**
  * Create a Go binding to libpolycall
  * @param config Configuration for the binding
- * @returns Initialized bridge for invoking polyglot functions
+ * @returns Bridge for invoking polyglot functions and managing Go runtime state
  */
 export function createGoBinding(config: GoBindingConfig): GoBindingBridge {
   let initialized = false;
-  const abiBindingName = 'go';
-  return {
+  const ABI_BINDING_NAME = 'go';
+
+  const ffiTransport = createFFITransport({
+    ffiPath: config.ffiPath,
+    schemaMode: config.schemaMode,
+    bindingName: ABI_BINDING_NAME,
+  });
+
+  const goroutinePool = createGoroutinePool(ffiTransport, {
+    poolSize: config.goroutinePoolSize ?? 4,
+    concurrencyModel: config.concurrencyModel ?? 'goroutines',
+  });
+
+  const channelManager = createChannelManager({
+    bufferSize: config.channelBufferSize ?? 16,
+  });
+
+  const memoryTracker = createMemoryTracker({
+    gcFraction: config.gcFraction,
+  });
+
+  const schemaResolver = createSchemaResolver({
+    schemaMode: config.schemaMode,
+    goVersion: config.ffiDescriptor?.goVersion,
+  });
+
+  function syncGoroutineCount(): void {
+    memoryTracker.setGoroutineCount(goroutinePool.getStats().activeGoroutines);
+  }
+
+  const bridge: GoBindingBridge = {
     async initialize(): Promise<void> {
       if (typeof config.ffiPath !== 'string' || config.ffiPath.trim().length === 0) {
         throw new Error(`Invalid ffiPath: ${config.ffiPath}`);
+      }
+      if (!schemaResolver.validate(config.schemaMode)) {
+        throw new Error(`Invalid schemaMode: ${config.schemaMode}`);
       }
       initialized = true;
     },
 
     async invoke(fn: string | object, args: unknown[]): Promise<unknown> {
       const functionId = normalizeFunctionIdentifier(fn);
-      const envelope: InvocationEnvelope = {
-        functionId: functionId ?? '<unknown>',
-        args,
-        metadata: {
-          schemaMode: config.schemaMode,
-          binding: abiBindingName,
-          timestampMs: Date.now(),
-          ffiPath: config.ffiPath,
-        },
-      };
+      const envelope = ffiTransport.buildEnvelope(functionId ?? '<unknown>', args);
 
       if (!initialized) {
-        return { code: 'NOT_INITIALIZED', message: 'Binding is not initialized', envelope } satisfies BindingInvokeError;
+        return { code: 'NOT_INITIALIZED', message: 'Binding is not initialized', envelope };
       }
-
       if (!functionId) {
-        return { code: 'MISSING_SYMBOL', message: 'Function identifier was not provided', envelope } satisfies BindingInvokeError;
+        return { code: 'MISSING_SYMBOL', message: 'Function identifier was not provided', envelope };
       }
 
-      const abiInvoker = (globalThis as typeof globalThis & { __obixAbiInvoker?: BindingAbiInvoker }).__obixAbiInvoker;
-      if (!abiInvoker?.invoke) {
-        return {
-          code: 'MISSING_SYMBOL',
-          message: 'Required ABI symbol __obixAbiInvoker.invoke is unavailable',
-          envelope,
-        } satisfies BindingInvokeError;
-      }
-
-      try {
-        return await abiInvoker.invoke(JSON.stringify(envelope));
-      } catch (cause) {
-        return {
-          code: 'INVOCATION_FAILED',
-          message: 'Invocation failed at ABI boundary',
-          envelope,
-          cause,
-        } satisfies BindingInvokeError;
-      }
+      return ffiTransport.dispatch(envelope);
     },
 
     async destroy(): Promise<void> {
+      goroutinePool.destroy();
+      channelManager.destroy();
+      memoryTracker.destroy();
+      ffiTransport.destroy();
+      schemaResolver.destroy();
       initialized = false;
     },
 
-    getMemoryUsage() {
-      return {
-        allocBytes: 0,
-        totalAllocBytes: 0,
-        sysBytes: 0,
-        numGC: 0,
-        goroutineCount: 0,
-      };
+    getMemoryUsage(): GoMemoryStats {
+      syncGoroutineCount();
+      return memoryTracker.snapshot();
     },
 
-    getSchemaMode(): SchemaMode {
-      return config.schemaMode;
+    getSchemaMode() {
+      return schemaResolver.getMode();
     },
 
     isInitialized(): boolean {
       return initialized;
     },
 
-    async submitTask(
-      taskId: string,
-      fn: string | object,
-      args: unknown[]
-    ): Promise<unknown> {
-      // Stub implementation
-      console.log('Submitting task:', taskId);
-      return undefined;
+    async submitTask(taskId: string, fn: string | object, args: unknown[]): Promise<unknown> {
+      if (!initialized) {
+        return { code: 'NOT_INITIALIZED', message: 'Binding is not initialized' };
+      }
+      const result = await goroutinePool.submit(taskId, fn, args);
+      syncGoroutineCount();
+      return result;
     },
 
-    getPoolStats() {
-      return {
-        activeGoroutines: 0,
-        queuedTasks: 0,
-        completedTasks: 0,
-      };
+    getPoolStats(): PoolStats {
+      return goroutinePool.getStats();
     },
+
+    get ffiTransport() { return ffiTransport; },
+    get goroutinePool() { return goroutinePool; },
+    get channelManager() { return channelManager; },
+    get memoryTracker() { return memoryTracker; },
+    get schemaResolver() { return schemaResolver; },
   };
-}
 
+  return bridge;
+}
